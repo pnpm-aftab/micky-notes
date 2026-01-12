@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""
+Windows Sticky Notes Companion App
+Syncs Windows Sticky Notes with macOS app over local network
+"""
+
+import sqlite3
+import json
+import websocket
+import threading
+import time
+import os
+from pathlib import Path
+from datetime import datetime
+import tkinter as tk
+from tkinter import ttk
+import win32crypt
+import sys
+
+class WindowsNotesParser:
+    """Parse Windows Sticky Notes from plum.sqlite"""
+    
+    def __init__(self):
+        self.plum_path = self.find_plum_sqlite()
+    
+    def find_plum_sqlite(self):
+        """Find plum.sqlite location on Windows"""
+        local_app_data = os.environ.get('LOCALAPPDATA', '')
+        plum_path = Path(local_app_data) / "Packages" / "Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe" / "LocalState" / "plum.sqlite"
+        
+        if plum_path.exists():
+            return str(plum_path)
+        
+        # Fallback to legacy location
+        roaming = os.environ.get('APPDATA', '')
+        legacy_path = Path(roaming) / "Microsoft" / "Sticky Notes" / "StickyNotes.snt"
+        
+        if legacy_path.exists():
+            return str(legacy_path)
+        
+        return None
+    
+    def parse_notes(self):
+        """Parse notes from plum.sqlite"""
+        if not self.plum_path:
+            return []
+        
+        notes = []
+        
+        try:
+            conn = sqlite3.connect(self.plum_path)
+            cursor = conn.cursor()
+            
+            # Try different table structures
+            tables = ['Note', 'Notes', 'StickyNotes']
+            
+            for table in tables:
+                try:
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    columns = [col[1] for col in cursor.fetchall()]
+                    
+                    # Find text column
+                    text_col = None
+                    for col in ['Text', 'Content', 'Body', 'NoteText']:
+                        if col in columns:
+                            text_col = col
+                            break
+                    
+                    if text_col:
+                        cursor.execute(f"SELECT {text_col} FROM {table}")
+                        rows = cursor.fetchall()
+                        
+                        for row in rows:
+                            note_text = row[0] if row[0] else ""
+                            if note_text:
+                                notes.append({
+                                    'id': datetime.now().timestamp(),
+                                    'text': note_text,
+                                    'createdAt': datetime.now().isoformat(),
+                                    'modifiedAt': datetime.now().isoformat(),
+                                    'color': 'Yellow'
+                                })
+                        break
+                        
+                except sqlite3.OperationalError:
+                    continue
+            
+            conn.close()
+            
+        except Exception as e:
+            print(f"Error parsing notes: {e}")
+        
+        return notes
+
+
+class WebSocketClient:
+    """WebSocket client to communicate with macOS app"""
+    
+    def __init__(self, host='localhost', port=8080):
+        self.host = host
+        self.port = port
+        self.ws = None
+        self.connected = False
+        self.on_message = None
+    
+    def connect(self):
+        """Connect to macOS app"""
+        uri = f"ws://{self.host}:{self.port}"
+        
+        try:
+            self.ws = websocket.WebSocketApp(
+                uri,
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close
+            )
+            
+            # Run in separate thread
+            thread = threading.Thread(target=self.ws.run_forever)
+            thread.daemon = True
+            thread.start()
+            
+        except Exception as e:
+            print(f"Connection error: {e}")
+            self.connected = False
+    
+    def _on_open(self, ws):
+        print("Connected to macOS app")
+        self.connected = True
+    
+    def _on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            if self.on_message:
+                self.on_message(data)
+        except json.JSONDecodeError:
+            pass
+    
+    def _on_error(self, ws, error):
+        print(f"WebSocket error: {error}")
+        self.connected = False
+    
+    def _on_close(self, ws, close_status_code, close_msg):
+        print("Disconnected from macOS app")
+        self.connected = False
+    
+    def send_note(self, note, action):
+        """Send note update to macOS app"""
+        if not self.connected:
+            return
+        
+        message = {
+            'type': 'note_update',
+            'action': action,
+            'note': note
+        }
+        
+        try:
+            self.ws.send(json.dumps(message))
+        except Exception as e:
+            print(f"Error sending message: {e}")
+            self.connected = False
+    
+    def disconnect(self):
+        """Disconnect from server"""
+        if self.ws:
+            self.ws.close()
+            self.connected = False
+
+
+class SyncManager:
+    """Manage sync between Windows and macOS"""
+    
+    def __init__(self):
+        self.parser = WindowsNotesParser()
+        self.client = WebSocketClient()
+        self.last_sync = None
+        self.notes_cache = {}
+        
+        # Setup message handler
+        self.client.on_message = self.handle_message
+    
+    def handle_message(self, data):
+        """Handle incoming message from macOS"""
+        if data.get('type') == 'note_update':
+            action = data.get('action')
+            note = data.get('note', {})
+            
+            if action == 'create':
+                self.create_note_on_windows(note)
+            elif action == 'update':
+                self.update_note_on_windows(note)
+            elif action == 'delete':
+                self.delete_note_on_windows(note)
+    
+    def create_note_on_windows(self, note):
+        """Create note in Windows Sticky Notes"""
+        # This is complex as Windows Sticky Notes doesn't have a public API
+        # For now, we'll just store in cache
+        note_id = note.get('id')
+        if note_id:
+            self.notes_cache[note_id] = note
+            print(f"Received note from macOS: {note.get('text', '')[:50]}...")
+    
+    def update_note_on_windows(self, note):
+        """Update note in Windows Sticky Notes"""
+        note_id = note.get('id')
+        if note_id in self.notes_cache:
+            self.notes_cache[note_id] = note
+    
+    def delete_note_on_windows(self, note):
+        """Delete note from cache"""
+        note_id = note.get('id')
+        if note_id in self.notes_cache:
+            del self.notes_cache[note_id]
+    
+    def sync_to_macos(self):
+        """Sync Windows notes to macOS"""
+        notes = self.parser.parse_notes()
+        
+        for note in notes:
+            self.client.send_note(note, 'create')
+        
+        self.last_sync = datetime.now()
+        print(f"Synced {len(notes)} notes to macOS")
+
+
+class TrayIcon:
+    """System tray icon for Windows companion app"""
+    
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.withdraw()  # Hide main window
+        
+        self.sync_manager = SyncManager()
+        self.is_connected = False
+        
+        self.create_tray_icon()
+    
+    def create_tray_icon(self):
+        """Create system tray icon"""
+        # Use hidden window as tray
+        self.root.title("Sticky Notes Sync")
+        
+        # Create popup menu
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Connect to macOS", command=self.connect)
+        menu.add_command(label="Disconnect", command=self.disconnect)
+        menu.add_separator()
+        menu.add_command(label="Sync Now", command=self.sync_now)
+        menu.add_separator()
+        menu.add_command(label="Status: Disconnected", command=self.show_status)
+        menu.add_separator()
+        menu.add_command(label="Exit", command=self.exit_app)
+        
+        # Note: Windows requires actual tray icon library
+        # This is a simplified version
+        print("Sticky Notes Sync Companion running...")
+        print("Right-click system tray icon for options")
+    
+    def connect(self):
+        """Connect to macOS app"""
+        self.sync_manager.client.connect()
+        self.is_connected = self.sync_manager.client.connected
+        print("Attempting to connect to macOS app...")
+    
+    def disconnect(self):
+        """Disconnect from macOS app"""
+        self.sync_manager.client.disconnect()
+        self.is_connected = False
+        print("Disconnected")
+    
+    def sync_now(self):
+        """Sync notes now"""
+        if self.is_connected:
+            self.sync_manager.sync_to_macos()
+            print("Sync complete")
+        else:
+            print("Not connected to macOS app")
+    
+    def show_status(self):
+        """Show connection status"""
+        status = "Connected" if self.is_connected else "Disconnected"
+        print(f"Status: {status}")
+        if self.sync_manager.last_sync:
+            print(f"Last sync: {self.sync_manager.last_sync}")
+    
+    def exit_app(self):
+        """Exit application"""
+        self.disconnect()
+        self.root.quit()
+    
+    def run(self):
+        """Run the application"""
+        # Auto-connect on startup
+        self.connect()
+        
+        # Keep running
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    try:
+        app = TrayIcon()
+        app.run()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
