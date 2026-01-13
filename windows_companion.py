@@ -87,11 +87,14 @@ class WindowsNotesParser:
 
                                 # Use UTC timezone for ISO8601 format
                                 now = datetime.utcnow()
+                                # Format as ISO8601 with milliseconds (3 decimal places) for Swift compatibility
+                                # Swift's ISO8601 decoder expects milliseconds, not microseconds
+                                iso_time = now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
                                 notes.append({
                                     'id': note_uuid,
                                     'attributedText': rtf_base64,  # Send as base64-encoded RTF data
-                                    'createdAt': now.isoformat() + 'Z',
-                                    'modifiedAt': now.isoformat() + 'Z',
+                                    'createdAt': iso_time,
+                                    'modifiedAt': iso_time,
                                     'color': 'Yellow'
                                 })
                         break
