@@ -5,12 +5,18 @@ struct ContentView: View {
     @State private var searchText = ""
     @State private var showingImporter = false
     @State private var showingExporter = false
+    @State private var noteToDelete: StickyNote?
+    @State private var showingDeleteAlert = false
+    @FocusState private var searchFieldFocused: Bool
 
     var filteredNotes: [StickyNote] {
         if searchText.isEmpty {
             return viewModel.notes
         }
-        return viewModel.notes.filter { $0.text.localizedCaseInsensitiveContains(searchText) }
+        return viewModel.notes.filter { note in
+            let plainText = note.decodeAttributedString().string
+            return plainText.localizedCaseInsensitiveContains(searchText)
+        }
     }
 
     var body: some View {
@@ -25,6 +31,9 @@ struct ContentView: View {
                     TextField("Search", text: $searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
+                        .focused($searchFieldFocused)
+                        .accessibilityLabel("Search notes")
+                        .accessibilityHint("Type to filter your notes")
                 }
                 .padding(12)
 
@@ -39,7 +48,8 @@ struct ContentView: View {
                                 }
                             Spacer()
                             Button {
-                                viewModel.deleteNote(note)
+                                noteToDelete = note
+                                showingDeleteAlert = true
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .font(.system(size: 14))
@@ -47,11 +57,30 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                             .opacity(0.6)
-                            .help("Delete note")
+                            .accessibilityLabel("Delete note")
+                            .accessibilityHint("Delete this note")
                         }
                     }
                 }
                 .listStyle(.sidebar)
+
+                // Sidebar toolbar
+                sidebarToolbar
+
+                // Sync status indicator
+                if viewModel.isSyncing {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(viewModel.isConnected ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(viewModel.isConnected ? "Connected" : "Disconnected")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         } detail: {
@@ -75,46 +104,25 @@ struct ContentView: View {
                     Image(systemName: "note.text")
                         .font(.system(size: 48))
                         .foregroundColor(.secondary)
-                    Text("Select a note or create a new one")
+                    Text("No Note Selected")
                         .font(.system(size: 15))
                         .foregroundColor(.secondary)
+                    Text("Create a new note or select one from the sidebar")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
 
                     Button(action: {
-                        let newNote = viewModel.createNote()
-                        viewModel.selectNote(newNote)
+                        if let newNote = viewModel.createNote() {
+                            viewModel.selectNote(newNote)
+                        }
                     }) {
-                        Text("New Note")
+                        Text("New Note (⌘N)")
                             .font(.system(size: 13))
                     }
+                    .keyboardShortcut("n", modifiers: [.command])
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("Import from Windows") {
-                        showingImporter = true
-                    }
-                    Button("Export Notes") {
-                        showingExporter = true
-                    }
-                    Divider()
-                    Button(viewModel.isSyncing ? "Stop Sync" : "Start Sync") {
-                        viewModel.toggleSync()
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
-            }
-
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    let newNote = viewModel.createNote()
-                    viewModel.selectNote(newNote)
-                } label: {
-                    Image(systemName: "plus")
-                }
             }
         }
         .fileImporter(
@@ -128,7 +136,7 @@ struct ContentView: View {
                     viewModel.importFromWindows(fileURL: url)
                 }
             case .failure(let error):
-                print("Import error: \(error)")
+                viewModel.errorMessage = "Import failed: \(error.localizedDescription)"
             }
         }
         .fileExporter(
@@ -138,9 +146,99 @@ struct ContentView: View {
             defaultFilename: "sticky_notes_export"
         ) { result in
             if case .failure(let error) = result {
-                print("Export error: \(error)")
+                viewModel.errorMessage = "Export failed: \(error.localizedDescription)"
             }
         }
+        .alert("Error", isPresented: .constant(viewModel.errorMessage != nil), presenting: viewModel.errorMessage) { _ in
+            Button("OK") {
+                viewModel.clearError()
+            }
+        } message: { error in
+            Text(error)
+        }
+        .alert("Delete Note?", isPresented: $showingDeleteAlert, presenting: noteToDelete) { note in
+            Button("Cancel", role: .cancel) {
+                noteToDelete = nil
+            }
+            Button("Delete", role: .destructive) {
+                viewModel.deleteNote(note)
+                noteToDelete = nil
+            }
+        } message: { note in
+            let preview = note.decodeAttributedString().string.isEmpty ? "New Note" : String(note.decodeAttributedString().string.prefix(30))
+            Text("Are you sure you want to delete \"\(preview)\"? This action cannot be undone.")
+        }
+        .alert("Sync Error", isPresented: .constant(viewModel.syncErrorMessage != nil), presenting: viewModel.syncErrorMessage) { _ in
+            Button("OK") {
+                viewModel.clearError()
+            }
+        } message: { error in
+            Text(error)
+        }
+        .onAppear {
+            // Add keyboard shortcut for search
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.keyCode == 6 && (event.modifierFlags.contains(.command)) {
+                    // Cmd+F
+                    searchFieldFocused = true
+                    return nil
+                }
+                return event
+            }
+        }
+    }
+
+    // MARK: - Sidebar Toolbar
+
+    private var sidebarToolbar: some View {
+        HStack(spacing: 8) {
+            // New note button
+            Button {
+                if let newNote = viewModel.createNote() {
+                    viewModel.selectNote(newNote)
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .help("New note")
+
+            Spacer()
+
+            // Sync toggle button
+            Button {
+                viewModel.toggleSync()
+            } label: {
+                Image(systemName: viewModel.isSyncing ? "stop.circle" : "play.circle")
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .help(viewModel.isSyncing ? "Stop sync" : "Start sync")
+
+            // Import button
+            Button {
+                showingImporter = true
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .help("Import from Windows")
+
+            // Export button
+            Button {
+                showingExporter = true
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .help("Export notes")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 }
 
@@ -153,10 +251,15 @@ struct NoteRowView: View {
                 .fill(note.color.displayColor)
                 .frame(width: 8, height: 8)
 
-            Text(note.text.isEmpty ? "New Note" : note.text)
+            Text(displayText)
                 .font(.system(size: 13))
                 .lineLimit(2)
         }
         .padding(.vertical, 4)
+    }
+
+    private var displayText: String {
+        let plainText = note.decodeAttributedString().string
+        return plainText.isEmpty ? "New Note" : plainText
     }
 }

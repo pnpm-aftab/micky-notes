@@ -6,6 +6,9 @@ class NotesViewModel: ObservableObject {
     @Published var selectedNote: StickyNote?
     @Published var isSyncing = false
     @Published var isConnected = false
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    @Published var syncErrorMessage: String?
 
     private let database = DatabaseManager.shared
     private let syncManager = SyncManager()
@@ -14,6 +17,7 @@ class NotesViewModel: ObservableObject {
     init() {
         loadNotes()
         setupSyncCallbacks()
+        setupNotificationObserver()
     }
 
     private func setupSyncCallbacks() {
@@ -22,6 +26,10 @@ class NotesViewModel: ObservableObject {
 
         syncManager.$isConnected
             .assign(to: &$isConnected)
+
+        syncManager.$syncError
+            .compactMap { $0 }
+            .assign(to: &$syncErrorMessage)
 
         syncManager.$isConnected
             .sink { [weak self] connected in
@@ -32,38 +40,79 @@ class NotesViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    func loadNotes() {
-        notes = database.fetchNotes()
-        print("Loaded \(notes.count) notes from database")
+    private func setupNotificationObserver() {
+        NotificationCenter.default.publisher(for: .notesDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.loadNotes()
+            }
+            .store(in: &cancellables)
     }
 
-    func createNote() -> StickyNote {
-        let newNote = StickyNote(text: "")
-        notes.insert(newNote, at: 0)
-        database.saveNote(note: newNote)
-        selectedNote = newNote
-        syncManager.broadcastNoteChange(newNote, action: "create")
-        print("Created new note with id: \(newNote.id)")
-        return newNote
+    func loadNotes() {
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            notes = try database.fetchNotes()
+            errorMessage = nil
+            print("Loaded \(notes.count) notes from database")
+        } catch {
+            errorMessage = "Failed to load notes: \(error.localizedDescription)"
+            print("Error loading notes: \(error)")
+        }
+    }
+
+    func createNote() -> StickyNote? {
+        // Create empty attributed string and convert to data for rich text support
+        let emptyAttributedString = NSAttributedString(string: "")
+        let data = StickyNote.encodeAttributedString(emptyAttributedString)
+        let newNote = StickyNote(id: UUID(), attributedText: data, color: .yellow)
+
+        do {
+            try database.saveNote(note: newNote)
+            notes.insert(newNote, at: 0)
+            selectedNote = newNote
+            syncManager.broadcastNoteChange(newNote, action: "create")
+            errorMessage = nil
+            print("Created new rich text note with id: \(newNote.id)")
+            return newNote
+        } catch {
+            errorMessage = "Failed to create note: \(error.localizedDescription)"
+            print("Error creating note: \(error)")
+            return nil
+        }
     }
 
     func updateNote(_ note: StickyNote) {
-        if let index = notes.firstIndex(where: { $0.id == note.id }) {
-            notes[index] = note
-            database.saveNote(note: note)
+        do {
+            try database.saveNote(note: note)
+            if let index = notes.firstIndex(where: { $0.id == note.id }) {
+                notes[index] = note
+            }
             syncManager.broadcastNoteChange(note, action: "update")
+            errorMessage = nil
             print("Updated note: \(note.id)")
+        } catch {
+            errorMessage = "Failed to update note: \(error.localizedDescription)"
+            print("Error updating note: \(error)")
         }
     }
 
     func deleteNote(_ note: StickyNote) {
-        notes.removeAll { $0.id == note.id }
-        database.deleteNote(id: note.id)
-        if selectedNote?.id == note.id {
-            selectedNote = nil
+        do {
+            try database.deleteNote(id: note.id)
+            notes.removeAll { $0.id == note.id }
+            if selectedNote?.id == note.id {
+                selectedNote = nil
+            }
+            syncManager.broadcastNoteChange(note, action: "delete")
+            errorMessage = nil
+            print("Deleted note: \(note.id)")
+        } catch {
+            errorMessage = "Failed to delete note: \(error.localizedDescription)"
+            print("Error deleting note: \(error)")
         }
-        syncManager.broadcastNoteChange(note, action: "delete")
-        print("Deleted note: \(note.id)")
     }
 
     func selectNote(_ note: StickyNote?) {
@@ -71,24 +120,43 @@ class NotesViewModel: ObservableObject {
     }
 
     func importFromWindows(fileURL: URL) {
+        isLoading = true
+        defer { isLoading = false }
+
         let importedNotes = WindowsNotesParser.parsePlumSQLite(fileURL: fileURL)
 
-        for note in importedNotes {
-            // Check if note already exists
-            if !notes.contains(where: { $0.id == note.id }) {
-                notes.insert(note, at: 0)
-                database.saveNote(note: note)
-            }
+        guard let firstNote = importedNotes.first else {
+            errorMessage = "No notes found in the selected file"
+            return
         }
 
-        syncManager.broadcastNoteChange(importedNotes.first!, action: "import")
+        do {
+            for note in importedNotes {
+                // Check if note already exists
+                if !notes.contains(where: { $0.id == note.id }) {
+                    try database.saveNote(note: note)
+                    notes.insert(note, at: 0)
+                }
+            }
+
+            syncManager.broadcastNoteChange(firstNote, action: "import")
+            errorMessage = nil
+        } catch {
+            errorMessage = "Failed to import notes: \(error.localizedDescription)"
+        }
     }
 
     func toggleSync() {
+        syncErrorMessage = nil
         if isSyncing {
             syncManager.stopSync()
         } else {
             syncManager.startSync()
         }
+    }
+
+    func clearError() {
+        errorMessage = nil
+        syncErrorMessage = nil
     }
 }

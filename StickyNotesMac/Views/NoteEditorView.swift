@@ -1,38 +1,65 @@
 import SwiftUI
+import AppKit
 
 struct NoteEditorView: View {
     @Binding var note: StickyNote
     let viewModel: NotesViewModel
     @FocusState private var isFocused: Bool
     @State private var showSaveIndicator = false
+    @State private var attributedString: NSAttributedString
+    @State private var textViewRef: NSTextView?
+
+    init(note: Binding<StickyNote>, viewModel: NotesViewModel) {
+        self._note = note
+        self.viewModel = viewModel
+        self._attributedString = State(initialValue: note.wrappedValue.decodeAttributedString())
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbarView
+            // Formatting toolbar
+            FormattingToolbar(textView: $textViewRef)
+
             Divider()
+
+            // Color picker toolbar
+            colorPickerToolbar
+
+            Divider()
+
+            // Rich text editor
             editorView
         }
         .background(Color(nsColor: .controlBackgroundColor))
-        .navigationTitle(note.text.isEmpty ? "New Note" : String(note.text.prefix(30)))
+        .navigationTitle(title)
+        .onAppear {
+            loadContent()
+        }
     }
 
-    private var toolbarView: some View {
+    private var title: String {
+        let plainText = attributedString.string
+        let preview = plainText.isEmpty ? "New Note" : String(plainText.prefix(30))
+        return preview
+    }
+
+    private var colorPickerToolbar: some View {
         HStack(spacing: 12) {
-            colorPicker
+            // Color picker
+            HStack(spacing: 4) {
+                ForEach(NoteColor.allCases, id: \.self) { color in
+                    colorButton(for: color)
+                }
+            }
+
             Spacer()
+
+            // Actions
             saveIndicator
             deleteButton
         }
         .padding(12)
         .background(note.color.displayColor)
-    }
-
-    private var colorPicker: some View {
-        HStack(spacing: 4) {
-            ForEach(NoteColor.allCases, id: \.self) { color in
-                colorButton(for: color)
-            }
-        }
     }
 
     private func colorButton(for color: NoteColor) -> some View {
@@ -86,13 +113,13 @@ struct NoteEditorView: View {
         ZStack(alignment: .topLeading) {
             Color(nsColor: .textBackgroundColor)
             placeholder
-            textEditor
+            richTextEditor
         }
     }
 
     private var placeholder: some View {
         Group {
-            if note.text.isEmpty {
+            if attributedString.string.isEmpty {
                 Text("Start typing...")
                     .font(.system(size: 15))
                     .foregroundColor(Color.secondary.opacity(0.6))
@@ -102,19 +129,25 @@ struct NoteEditorView: View {
         }
     }
 
-    private var textEditor: some View {
-        TextEditor(text: $note.text)
-            .font(.system(size: 15))
-            .foregroundColor(Color.primary)
-            .focused($isFocused)
-            .scrollContentBackground(.hidden)
-            .background(Color.clear)
-            .padding(16)
-            .onChange(of: note.text) { oldValue, newValue in
+    private var richTextEditor: some View {
+        RichTextEditor(
+            attributedString: $attributedString,
+            textView: $textViewRef,
+            onTextChanged: { newAttributedString in
+                note.attributedText = StickyNote.encodeAttributedString(newAttributedString)
                 note.modifiedAt = Date()
                 viewModel.updateNote(note)
                 triggerSaveFeedback()
             }
+        )
+        .focused($isFocused)
+        .onAppear {
+            isFocused = true
+        }
+    }
+
+    private func loadContent() {
+        attributedString = note.decodeAttributedString()
     }
 
     private func triggerSaveFeedback() {

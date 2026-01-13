@@ -5,57 +5,62 @@ class WebSocketServer: NSObject {
     static let shared = WebSocketServer()
     private var listener: NWListener?
     private var connections: [NWConnection] = []
-    
+
     var onMessageReceived: ((StickyNote) -> Void)?
     var onConnectionChange: ((Bool) -> Void)?
-    
+    var onError: ((String) -> Void)?
+
     private override init() {
         super.init()
     }
-    
+
     func start() {
         let config = NWParameters(tls: nil)
         config.allowLocalEndpointReuse = true
         config.allowFastOpen = true
-        
+
         do {
             listener = try NWListener(using: config, on: .http)
             listener?.service = NWListener.Service(name: "StickyNotes", type: "_stickynotes._tcp", domain: nil)
-            
+
             listener?.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
             }
-            
+
             listener?.start(queue: .main)
             print("WebSocket server started on local network")
         } catch {
-            print("Error starting server: \(error)")
+            let errorMsg = "Error starting server: \(error.localizedDescription)"
+            print(errorMsg)
+            onError?(errorMsg)
         }
     }
-    
+
     private func handleConnection(_ connection: NWConnection) {
         connections.append(connection)
         onConnectionChange?(true)
-        
+
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
                 print("Client connected")
                 self?.receiveMessage(from: connection)
             case .failed(let error):
-                print("Connection failed: \(error)")
+                let errorMsg = "Connection failed: \(error.localizedDescription)"
+                print(errorMsg)
                 self?.removeConnection(connection)
                 self?.onConnectionChange?(false)
+                self?.onError?(errorMsg)
             case .waiting(let error):
                 print("Connection waiting: \(error)")
             default:
                 break
             }
         }
-        
+
         connection.start(queue: .main)
     }
-    
+
     private func removeConnection(_ connection: NWConnection) {
         connections.removeAll { $0 === connection }
     }

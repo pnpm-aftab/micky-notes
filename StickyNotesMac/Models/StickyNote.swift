@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import AppKit
 
 enum NoteColor: String, CaseIterable, Codable {
     case yellow = "Yellow"
@@ -35,17 +36,82 @@ enum NoteColor: String, CaseIterable, Codable {
 
 struct StickyNote: Identifiable, Codable, Hashable {
     var id: UUID
-    var text: String
+    var attributedText: Data
     var createdAt: Date
     var modifiedAt: Date
     var color: NoteColor
 
+    // Computed property for backward compatibility during migration
+    var text: String {
+        get {
+            guard let attrString = try? NSAttributedString(data: attributedText, options: [
+                .documentType: NSAttributedString.DocumentType.rtf,
+                .characterEncoding: String.Encoding.utf8.rawValue
+            ], documentAttributes: nil) else {
+                return ""
+            }
+            return attrString.string
+        }
+    }
+
     init(id: UUID = UUID(), text: String, color: NoteColor = .yellow) {
         self.id = id
-        self.text = text
+        // Convert plain text to attributed string with default attributes
+        let attrString = NSAttributedString(string: text)
+        self.attributedText = Self.encodeAttributedString(attrString)
         self.createdAt = Date()
         self.modifiedAt = Date()
         self.color = color
+    }
+
+    init(id: UUID = UUID(), attributedText: Data, color: NoteColor = .yellow) {
+        self.id = id
+        self.attributedText = attributedText
+        self.createdAt = Date()
+        self.modifiedAt = Date()
+        self.color = color
+    }
+
+    // Encoding/Decoding helpers
+    static func encodeAttributedString(_ attrString: NSAttributedString) -> Data {
+        let range = NSRange(location: 0, length: attrString.length)
+        do {
+            let data = try attrString.data(from: range, documentAttributes: [
+                .documentType: NSAttributedString.DocumentType.rtf,
+                .characterEncoding: String.Encoding.utf8.rawValue
+            ])
+            print("DEBUG: Encoded \(attrString.length) chars to \(data.count) bytes of RTF")
+            if data.count > 0 {
+                print("DEBUG: RTF preview: \(String(data: data.prefix(100), encoding: .utf8) ?? "invalid")")
+            }
+            return data
+        } catch {
+            print("Error encoding attributed string: \(error)")
+            return Data()
+        }
+    }
+
+    func decodeAttributedString() -> NSAttributedString {
+        guard !attributedText.isEmpty else {
+            print("DEBUG: Decoding empty attributedText")
+            return NSAttributedString(string: "")
+        }
+
+        print("DEBUG: Decoding \(attributedText.count) bytes of RTF")
+
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.rtf,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+
+        do {
+            let attrString = try NSAttributedString(data: attributedText, options: options, documentAttributes: nil)
+            print("DEBUG: Decoded to \(attrString.length) chars: '\(attrString.string.prefix(50))'")
+            return attrString
+        } catch {
+            print("Error decoding attributed string: \(error)")
+            return NSAttributedString(string: text)
+        }
     }
 }
 
