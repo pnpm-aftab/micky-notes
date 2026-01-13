@@ -119,13 +119,29 @@ class WebSocketServer: NSObject {
     }
     
     private func receiveMessage(from connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] (data, context, isComplete, error) in
-            if let data = data, !data.isEmpty {
-                self?.processMessage(data)
+        // First read the 4-byte length prefix
+        connection.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] (lengthData, context, isComplete, error) in
+            guard let lengthData = lengthData, lengthData.count == 4 else {
+                if !isComplete && error == nil {
+                    self?.receiveMessage(from: connection)
+                }
+                return
             }
-            
-            if !isComplete && error == nil {
-                self?.receiveMessage(from: connection)
+
+            // Parse message length
+            let messageLength = lengthData.withUnsafeBytes { bytes in
+                UInt32(bigEndian: bytes.load(as: UInt32.self))
+            }
+
+            // Now read the actual message
+            connection.receive(minimumIncompleteLength: Int(messageLength), maximumLength: Int(messageLength)) { [weak self] (data, context, isComplete, error) in
+                if let data = data, !data.isEmpty {
+                    self?.processMessage(data)
+                }
+
+                if !isComplete && error == nil {
+                    self?.receiveMessage(from: connection)
+                }
             }
         }
     }

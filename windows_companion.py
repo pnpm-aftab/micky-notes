@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import ttk
 import win32crypt
 import sys
+import uuid
 
 class WindowsNotesParser:
     """Parse Windows Sticky Notes from plum.sqlite"""
@@ -73,8 +74,10 @@ class WindowsNotesParser:
                         for row in rows:
                             note_text = row[0] if row[0] else ""
                             if note_text:
+                                # Generate a proper UUID string
+                                note_uuid = str(uuid.uuid4())
                                 notes.append({
-                                    'id': datetime.now().timestamp(),
+                                    'id': note_uuid,
                                     'text': note_text,
                                     'createdAt': datetime.now().isoformat(),
                                     'modifiedAt': datetime.now().isoformat(),
@@ -181,7 +184,9 @@ class TCPClient:
 
         try:
             data = json.dumps(message).encode('utf-8')
-            self.socket.sendall(data)
+            # Prefix message with 4-byte length prefix
+            length_prefix = len(data).to_bytes(4, byteorder='big')
+            self.socket.sendall(length_prefix + data)
         except Exception as e:
             print(f"Error sending message: {e}")
             self.connected = False
