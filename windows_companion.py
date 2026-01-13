@@ -85,11 +85,13 @@ class WindowsNotesParser:
                                 rtf_bytes = rtf_text.encode('utf-8')
                                 rtf_base64 = base64.b64encode(rtf_bytes).decode('ascii')
 
+                                # Use UTC timezone for ISO8601 format
+                                now = datetime.utcnow()
                                 notes.append({
                                     'id': note_uuid,
                                     'attributedText': rtf_base64,  # Send as base64-encoded RTF data
-                                    'createdAt': datetime.now().isoformat(),
-                                    'modifiedAt': datetime.now().isoformat(),
+                                    'createdAt': now.isoformat() + 'Z',
+                                    'modifiedAt': now.isoformat() + 'Z',
                                     'color': 'Yellow'
                                 })
                         break
