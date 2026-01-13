@@ -90,6 +90,7 @@ class WindowsNotesParser:
                                 # Format as ISO8601 with milliseconds (3 decimal places) for Swift compatibility
                                 # Swift's ISO8601 decoder expects milliseconds, not microseconds
                                 iso_time = now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                                print(f"DEBUG: Sending note with date: {iso_time}")
                                 notes.append({
                                     'id': note_uuid,
                                     'attributedText': rtf_base64,  # Send as base64-encoded RTF data

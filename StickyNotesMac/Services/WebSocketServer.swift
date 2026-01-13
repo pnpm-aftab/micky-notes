@@ -152,12 +152,53 @@ class WebSocketServer: NSObject {
                let type = json["type"] as? String,
                type == "note_update",
                let noteData = json["note"] as? [String: Any] {
-                
+
+                // Debug: print the raw note data
+                if let noteJSON = try? JSONSerialization.data(withJSONObject: noteData),
+                   let noteString = String(data: noteJSON, encoding: .utf8) {
+                    print("DEBUG: Received note JSON: \(noteString)")
+                }
+
                 let noteData = try JSONSerialization.data(withJSONObject: noteData)
                 let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
+
+                // Try ISO8601 first, then try custom formats if that fails
+                decoder.dateDecodingStrategy = .custom { decoder in
+                    let container = try decoder.singleValueContainer()
+                    let dateString = try container.decode(String.self)
+
+                    // Debug: print the date string we're trying to parse
+                    print("DEBUG: Parsing date: '\(dateString)'")
+
+                    // Try multiple date formats
+                    let formats = [
+                        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",  // ISO8601 with milliseconds
+                        "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'",  // ISO8601 with microseconds
+                        "yyyy-MM-dd'T'HH:mm:ss'Z'",  // ISO8601 without fractional seconds
+                        "yyyy-MM-dd'T'HH:mm:ssZ",  // ISO8601 without Z
+                        "yyyy-MM-dd'T'HH:mm:ss.SSS",  // With milliseconds, no Z
+                    ]
+
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+
+                    for format in formats {
+                        formatter.dateFormat = format
+                        if let date = formatter.date(from: dateString) {
+                            print("DEBUG: Parsed date using format: \(format)")
+                            return date
+                        }
+                    }
+
+                    throw DecodingError.dataCorruptedError(
+                        in: container,
+                        debugDescription: "Cannot decode date from '\(dateString)'"
+                    )
+                }
+
                 let note = try decoder.decode(StickyNote.self, from: noteData)
-                
+
                 DispatchQueue.main.async {
                     self.onMessageReceived?(note)
                 }
