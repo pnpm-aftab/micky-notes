@@ -19,12 +19,44 @@ import sys
 import uuid
 import base64
 
+def clean_note_text(text: str) -> str:
+    """Remove any metadata patterns from note text before RTF encoding"""
+    if not text:
+        return ""
+
+    import re
+    # Remove any \id=UUID patterns
+    text = re.sub(r'\\id=\S+', '', text)
+    # Remove any name=UUID patterns
+    text = re.sub(r'\w+=\S+', '', text)
+    # Clean up whitespace
+    text = text.strip()
+    # Remove extra blank lines
+    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+
+    return text
+
+def map_windows_color(color_index: int) -> str:
+    """Map Windows color index to NoteColor enum string"""
+    color_map = {
+        0: 'Yellow',
+        1: 'Blue',
+        2: 'Green',
+        3: 'Pink',
+        4: 'Purple',
+        5: 'Orange',
+        6: 'Red',
+        7: 'Teal'
+    }
+    return color_map.get(color_index, 'Yellow')
+
+
 class WindowsNotesParser:
     """Parse Windows Sticky Notes from plum.sqlite"""
-    
+
     def __init__(self):
         self.plum_path = self.find_plum_sqlite()
-    
+
     def find_plum_sqlite(self):
         """Find plum.sqlite location on Windows"""
         local_app_data = os.environ.get('LOCALAPPDATA', '')
@@ -59,27 +91,51 @@ class WindowsNotesParser:
             for table in tables:
                 try:
                     cursor.execute(f"PRAGMA table_info({table})")
-                    columns = [col[1] for col in cursor.fetchall()]
-                    
+                    columns_info = cursor.fetchall()
+                    columns = [col[1] for col in columns_info]
+
                     # Find text column
                     text_col = None
                     for col in ['Text', 'Content', 'Body', 'NoteText']:
                         if col in columns:
                             text_col = col
                             break
-                    
+
+                    # Check if Color column exists
+                    has_color = any(col[1] == 'Color' for col in columns_info)
+
                     if text_col:
-                        cursor.execute(f"SELECT {text_col} FROM {table}")
+                        # Select appropriate columns
+                        if has_color:
+                            cursor.execute(f"SELECT {text_col}, Color FROM {table}")
+                        else:
+                            cursor.execute(f"SELECT {text_col} FROM {table}")
                         rows = cursor.fetchall()
-                        
+
                         for row in rows:
                             note_text = row[0] if row[0] else ""
+
+                            # Extract color if available
+                            if has_color and len(row) > 1 and row[1] is not None:
+                                color_index = row[1]
+                                note_color = map_windows_color(color_index)
+                            else:
+                                note_color = 'Yellow'
+
                             if note_text:
+                                # Clean the note text to remove any metadata
+                                note_text = clean_note_text(note_text)
+                                print(f"DEBUG: Cleaned note text: '{note_text}'")
+
+                                if not note_text.strip():
+                                    continue  # Skip empty notes after cleaning
+
                                 # Generate a proper UUID string
                                 note_uuid = str(uuid.uuid4())
 
-                                # Convert plain text to RTF format
-                                rtf_text = "{\\rtf1\\ansi\\ansicpg1252\\deff0\\nouicompat\\deflang1033\\viewkind4\\uc1\\pard\\f0\\fs20 " + note_text + "\\par}"
+                                # Convert plain text to RTF format with macOS-compatible formatting
+                                # fs30 = 15pt (matches macOS default)
+                                rtf_text = "{\\rtf1\\ansi\\ansicpg1252\\deff0\\nouicompat\\deflang1033\\viewkind4\\uc1\\pard\\f0\\fs30 " + note_text + "\\par}"
 
                                 # Encode RTF text as bytes, then base64
                                 rtf_bytes = rtf_text.encode('utf-8')
@@ -96,7 +152,7 @@ class WindowsNotesParser:
                                     'attributedText': rtf_base64,  # Send as base64-encoded RTF data
                                     'createdAt': iso_time,
                                     'modifiedAt': iso_time,
-                                    'color': 'Yellow'
+                                    'color': note_color  # Use mapped color instead of hardcoded 'Yellow'
                                 })
                         break
                         
