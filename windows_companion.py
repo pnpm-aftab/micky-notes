@@ -17,6 +17,7 @@ from tkinter import ttk
 import win32crypt
 import sys
 import uuid
+import base64
 
 class WindowsNotesParser:
     """Parse Windows Sticky Notes from plum.sqlite"""
@@ -76,9 +77,17 @@ class WindowsNotesParser:
                             if note_text:
                                 # Generate a proper UUID string
                                 note_uuid = str(uuid.uuid4())
+
+                                # Convert plain text to RTF format
+                                rtf_text = "{\\rtf1\\ansi\\ansicpg1252\\deff0\\nouicompat\\deflang1033\\viewkind4\\uc1\\pard\\f0\\fs20 " + note_text + "\\par}"
+
+                                # Encode RTF text as bytes, then base64
+                                rtf_bytes = rtf_text.encode('utf-8')
+                                rtf_base64 = base64.b64encode(rtf_bytes).decode('ascii')
+
                                 notes.append({
                                     'id': note_uuid,
-                                    'text': note_text,
+                                    'attributedText': rtf_base64,  # Send as base64-encoded RTF data
                                     'createdAt': datetime.now().isoformat(),
                                     'modifiedAt': datetime.now().isoformat(),
                                     'color': 'Yellow'
