@@ -26,8 +26,12 @@ A native macOS Sticky Notes app that syncs with Windows Sticky Notes over local 
 # Install dependencies
 pip install -r requirements.txt
 
-# Run companion app
-python windows_companion.py
+# Run companion app (replace with your Mac's IP address)
+python windows_companion.py 10.17.19.29
+
+# To find your Mac's IP:
+# macOS: System Settings → Network → check the IP address
+# Or run in Terminal: ifconfig | grep "inet " | grep -v 127.0.0.1
 ```
 
 ## Usage
@@ -40,9 +44,10 @@ python windows_companion.py
    - The app will start listening for connections on your local network
 
 2. **On Windows**:
-   - Run `windows_companion.py` with Python
-   - It will automatically detect and connect to your macOS app
-   - Windows Sticky Notes will sync automatically
+   - Find your Mac's IP address (see above)
+   - Run `python windows_companion.py <MAC_IP>` (e.g., `python windows_companion.py 10.17.19.29`)
+   - The companion will try multiple ports automatically (8080, 3000, 5000, 8000, 9000)
+   - Windows Sticky Notes will sync automatically once connected
 
 ### Importing Windows Notes
 
@@ -58,10 +63,15 @@ python windows_companion.py
 
 ### Network Sync
 
-- Both Mac and Windows must be on the same WiFi network
+- Both Mac and Windows must be on the same WiFi network (or use alternative methods)
 - The macOS app acts as a WebSocket server
 - Windows app connects and syncs in real-time
 - Changes on either device sync instantly
+
+**Note for public/shared networks (dorms, offices, cafes):**
+- If connection fails, the network may block peer-to-peer connections
+- Try creating a WiFi hotspot from your Mac and connect Windows to it
+- Or use manual import/export instead of real-time sync
 
 ### Manual Sync (Alternative)
 
@@ -91,9 +101,10 @@ If network sync isn't available:
 
 ### Network
 
-- **macOS**: WebSocket server on port 8080 (auto-discoverable via Bonjour)
+- **macOS**: WebSocket server (auto-discovers available port)
 - **Windows**: WebSocket client that connects to macOS app
 - **Data transfer**: JSON over local WiFi
+- **Ports tried**: 8080, 3000, 5000, 8000, 9000 (automatic)
 
 ## Troubleshooting
 

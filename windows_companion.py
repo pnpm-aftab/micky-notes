@@ -95,35 +95,53 @@ class WindowsNotesParser:
 
 class WebSocketClient:
     """WebSocket client to communicate with macOS app"""
-    
-    def __init__(self, host='localhost', port=8080):
+
+    def __init__(self, host='localhost', port=None):
         self.host = host
         self.port = port
         self.ws = None
         self.connected = False
         self.on_message = None
-    
+        self.actual_port = None
+
     def connect(self):
-        """Connect to macOS app"""
-        uri = f"ws://{self.host}:{self.port}"
-        
-        try:
-            self.ws = websocket.WebSocketApp(
-                uri,
-                on_open=self._on_open,
-                on_message=self._on_message,
-                on_error=self._on_error,
-                on_close=self._on_close
-            )
-            
-            # Run in separate thread
-            thread = threading.Thread(target=self.ws.run_forever)
-            thread.daemon = True
-            thread.start()
-            
-        except Exception as e:
-            print(f"Connection error: {e}")
-            self.connected = False
+        """Connect to macOS app - try common ports if not specified"""
+        if self.port:
+            ports_to_try = [self.port]
+        else:
+            ports_to_try = [8080, 3000, 5000, 8000, 9000]
+
+        for port in ports_to_try:
+            uri = f"ws://{self.host}:{port}"
+
+            try:
+                print(f"Trying to connect to {uri}...")
+                self.ws = websocket.WebSocketApp(
+                    uri,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close
+                )
+
+                # Run in separate thread
+                thread = threading.Thread(target=self.ws.run_forever)
+                thread.daemon = True
+                thread.start()
+
+                # Wait a bit to see if connection succeeds
+                time.sleep(2)
+                if self.connected:
+                    self.actual_port = port
+                    print(f"Successfully connected on port {port}")
+                    return
+
+            except Exception as e:
+                print(f"Failed to connect on port {port}: {e}")
+                continue
+
+        print("Could not connect to macOS app on any port")
+        self.connected = False
     
     def _on_open(self, ws):
         print("Connected to macOS app")
@@ -171,13 +189,13 @@ class WebSocketClient:
 
 class SyncManager:
     """Manage sync between Windows and macOS"""
-    
-    def __init__(self):
+
+    def __init__(self, mac_host=None):
         self.parser = WindowsNotesParser()
-        self.client = WebSocketClient()
+        self.client = WebSocketClient(host=mac_host or 'localhost')
         self.last_sync = None
         self.notes_cache = {}
-        
+
         # Setup message handler
         self.client.on_message = self.handle_message
     
@@ -228,14 +246,14 @@ class SyncManager:
 
 class TrayIcon:
     """System tray icon for Windows companion app"""
-    
-    def __init__(self):
+
+    def __init__(self, mac_host=None):
         self.root = tk.Tk()
         self.root.withdraw()  # Hide main window
-        
-        self.sync_manager = SyncManager()
+
+        self.sync_manager = SyncManager(mac_host=mac_host)
         self.is_connected = False
-        
+
         self.create_tray_icon()
     
     def create_tray_icon(self):
@@ -301,8 +319,17 @@ class TrayIcon:
 
 
 if __name__ == "__main__":
+    # Get Mac IP from command line argument or use default
+    mac_ip = sys.argv[1] if len(sys.argv) > 1 else None
+
+    if mac_ip:
+        print(f"Connecting to Mac at: {mac_ip}")
+    else:
+        print("No Mac IP provided. Usage: python windows_companion.py <MAC_IP>")
+        print("Trying localhost...")
+
     try:
-        app = TrayIcon()
+        app = TrayIcon(mac_host=mac_ip)
         app.run()
     except KeyboardInterrupt:
         print("\nShutting down...")
