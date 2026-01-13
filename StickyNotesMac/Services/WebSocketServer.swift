@@ -1,10 +1,12 @@
 import Foundation
 import Network
+import SystemConfiguration
 
 class WebSocketServer: NSObject {
     static let shared = WebSocketServer()
     private var listener: NWListener?
     private var connections: [NWConnection] = []
+    private var serverPort: NWEndpoint.Port?
 
     var onMessageReceived: ((StickyNote) -> Void)?
     var onConnectionChange: ((Bool) -> Void)?
@@ -19,16 +21,39 @@ class WebSocketServer: NSObject {
         config.allowLocalEndpointReuse = true
         config.allowFastOpen = true
 
+        // Use TCP instead of HTTP for raw WebSocket-like connections
         do {
-            listener = try NWListener(using: config, on: .http)
+            // Use fixed port 8080
+            listener = try NWListener(using: .tcp, on: 8080)
             listener?.service = NWListener.Service(name: "StickyNotes", type: "_stickynotes._tcp", domain: nil)
 
             listener?.newConnectionHandler = { [weak self] connection in
+                print("New connection attempt from \(connection.endpoint)")
                 self?.handleConnection(connection)
             }
 
+            listener?.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .ready:
+                    if let port = self?.serverPort {
+                        let localIP = self?.getLocalIPAddress() ?? "unknown"
+                        print("✅ WebSocket server listening on \(localIP):\(port)")
+                        print("   Use this IP on Windows: python windows_companion.py \(localIP)")
+                    }
+                case .failed(let error):
+                    print("❌ Server failed: \(error)")
+                default:
+                    break
+                }
+            }
+
+            // Store the port before starting
+            if let port = listener?.port {
+                self.serverPort = port
+            }
+
             listener?.start(queue: .main)
-            print("WebSocket server started on local network")
+            print("Starting WebSocket server...")
         } catch {
             let errorMsg = "Error starting server: \(error.localizedDescription)"
             print(errorMsg)
@@ -36,14 +61,42 @@ class WebSocketServer: NSObject {
         }
     }
 
-    private func handleConnection(_ connection: NWConnection) {
-        connections.append(connection)
-        onConnectionChange?(true)
+    private func getLocalIPAddress() -> String {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
 
+        guard getifaddrs(&ifaddr) == 0 else { return "unknown" }
+        defer { freeifaddrs(ifaddr) }
+
+        var ptr = ifaddr
+        while ptr != nil {
+            defer { ptr = ptr?.pointee.ifa_next }
+
+            guard let interface = ptr?.pointee else { continue }
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+
+            if addrFamily == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name == "en0" || name == "en1" {  // WiFi or Ethernet
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                               &hostname, socklen_t(hostname.count),
+                               nil, socklen_t(0), NI_NUMERICHOST)
+                    address = String(cString: hostname)
+                }
+            }
+        }
+
+        return address ?? "10.17.19.29"  // Fallback to known IP
+    }
+
+    private func handleConnection(_ connection: NWConnection) {
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                print("Client connected")
+                print("✅ Client connected from \(connection.endpoint)")
+                self?.connections.append(connection)
+                self?.onConnectionChange?(true)
                 self?.receiveMessage(from: connection)
             case .failed(let error):
                 let errorMsg = "Connection failed: \(error.localizedDescription)"

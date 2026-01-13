@@ -6,7 +6,7 @@ Syncs Windows Sticky Notes with macOS app over local network
 
 import sqlite3
 import json
-import websocket
+import socket
 import threading
 import time
 import os
@@ -93,16 +93,17 @@ class WindowsNotesParser:
         return notes
 
 
-class WebSocketClient:
-    """WebSocket client to communicate with macOS app"""
+class TCPClient:
+    """TCP client to communicate with macOS app"""
 
     def __init__(self, host='localhost', port=None):
         self.host = host
         self.port = port
-        self.ws = None
+        self.socket = None
         self.connected = False
         self.on_message = None
         self.actual_port = None
+        self.receive_thread = None
 
     def connect(self):
         """Connect to macOS app - try common ports if not specified"""
@@ -112,79 +113,80 @@ class WebSocketClient:
             ports_to_try = [8080, 3000, 5000, 8000, 9000]
 
         for port in ports_to_try:
-            uri = f"ws://{self.host}:{port}"
-
             try:
-                print(f"Trying to connect to {uri}...")
-                self.ws = websocket.WebSocketApp(
-                    uri,
-                    on_open=self._on_open,
-                    on_message=self._on_message,
-                    on_error=self._on_error,
-                    on_close=self._on_close
-                )
+                print(f"Trying to connect to {self.host}:{port}...")
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.settimeout(5)
+                self.socket.connect((self.host, port))
 
-                # Run in separate thread
-                thread = threading.Thread(target=self.ws.run_forever)
-                thread.daemon = True
-                thread.start()
+                self.connected = True
+                self.actual_port = port
+                print(f"✅ Successfully connected on port {port}")
 
-                # Wait a bit to see if connection succeeds
-                time.sleep(2)
-                if self.connected:
-                    self.actual_port = port
-                    print(f"Successfully connected on port {port}")
-                    return
+                # Start receiving messages
+                self.receive_thread = threading.Thread(target=self._receive_messages, daemon=True)
+                self.receive_thread.start()
+
+                return
 
             except Exception as e:
                 print(f"Failed to connect on port {port}: {e}")
+                self.connected = False
+                if self.socket:
+                    self.socket.close()
                 continue
 
         print("Could not connect to macOS app on any port")
-        self.connected = False
-    
-    def _on_open(self, ws):
-        print("Connected to macOS app")
-        self.connected = True
-    
-    def _on_message(self, ws, message):
-        try:
-            data = json.loads(message)
-            if self.on_message:
-                self.on_message(data)
-        except json.JSONDecodeError:
-            pass
-    
-    def _on_error(self, ws, error):
-        print(f"WebSocket error: {error}")
-        self.connected = False
-    
-    def _on_close(self, ws, close_status_code, close_msg):
-        print("Disconnected from macOS app")
-        self.connected = False
-    
+
+    def _receive_messages(self):
+        """Receive messages from server"""
+        while self.connected:
+            try:
+                data = self.socket.recv(65536)
+                if not data:
+                    print("Disconnected from server")
+                    self.connected = False
+                    break
+
+                # Try to parse as JSON
+                try:
+                    message = json.loads(data.decode('utf-8'))
+                    if self.on_message:
+                        self.on_message(message)
+                except json.JSONDecodeError:
+                    pass
+
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"Error receiving message: {e}")
+                self.connected = False
+                break
+
     def send_note(self, note, action):
         """Send note update to macOS app"""
-        if not self.connected:
+        if not self.connected or not self.socket:
             return
-        
+
         message = {
             'type': 'note_update',
             'action': action,
             'note': note
         }
-        
+
         try:
-            self.ws.send(json.dumps(message))
+            data = json.dumps(message).encode('utf-8')
+            self.socket.sendall(data)
         except Exception as e:
             print(f"Error sending message: {e}")
             self.connected = False
-    
+
     def disconnect(self):
         """Disconnect from server"""
-        if self.ws:
-            self.ws.close()
-            self.connected = False
+        self.connected = False
+        if self.socket:
+            self.socket.close()
+        print("Disconnected")
 
 
 class SyncManager:
@@ -192,7 +194,7 @@ class SyncManager:
 
     def __init__(self, mac_host=None):
         self.parser = WindowsNotesParser()
-        self.client = WebSocketClient(host=mac_host or 'localhost')
+        self.client = TCPClient(host=mac_host or 'localhost')
         self.last_sync = None
         self.notes_cache = {}
 
