@@ -102,6 +102,7 @@ class TCPClient:
         self.socket = None
         self.connected = False
         self.on_message = None
+        self.on_connected = None  # Callback when connected
         self.actual_port = None
         self.receive_thread = None
 
@@ -126,6 +127,10 @@ class TCPClient:
                 # Start receiving messages
                 self.receive_thread = threading.Thread(target=self._receive_messages, daemon=True)
                 self.receive_thread.start()
+
+                # Trigger callback to notify that we're connected
+                if self.on_connected:
+                    self.on_connected()
 
                 return
 
@@ -200,13 +205,21 @@ class SyncManager:
 
         # Setup message handler
         self.client.on_message = self.handle_message
+
+        # Setup auto-sync on connection
+        self.client.on_connected = self.auto_sync
     
+    def auto_sync(self):
+        """Automatically sync notes when connected"""
+        print("🔄 Auto-syncing Windows notes to macOS...")
+        self.sync_to_macos()
+
     def handle_message(self, data):
         """Handle incoming message from macOS"""
         if data.get('type') == 'note_update':
             action = data.get('action')
             note = data.get('note', {})
-            
+
             if action == 'create':
                 self.create_note_on_windows(note)
             elif action == 'update':
